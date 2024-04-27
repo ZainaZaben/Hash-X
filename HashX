@@ -1,0 +1,81 @@
+import os
+import pandas as pd
+from PIL import Image
+from torchvision import transforms
+import json
+import torch
+from transformers import CLIPProcessor
+
+class CustomDataset():
+    image_dir = ""
+    def _init_(self):
+        self.image_dir = "Images"
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
+        csv_file='Data_Entry.csv'
+        
+        # Read CSV file
+        self.data = pd.read_csv(csv_file)
+        self.data['Patient Gender'] = self.data['Patient Gender'].map({'M': 'Male', 'F': 'Female'})
+
+        # Filter train/validation data to only include images that exist in the folder
+        self.dataset = self.data[self.data['Image Index'].apply(lambda x: os.path.exists(os.path.join(self.image_dir, x)))]
+
+        
+    def _len_(self):
+        return len(self.dataset)
+
+    def _getitem_(self, idx):
+        img_name = os.path.join(self.image_dir, self.dataset.loc[idx, 'Image Index'])
+        image = Image.open(img_name).convert('RGB')
+        label = self.dataset.loc[idx, 'About_Illness']
+        patient_age = self.dataset.loc[idx, 'Patient Age']
+        patient_gender = self.dataset.loc[idx, 'Patient Gender']
+        if self.transform:
+            image = self.transform(image)
+        return image, f"Patient Age: {patient_age}, Patient Gender: {patient_gender}", label
+
+# Define a function to process data for CLIP
+def process_data(images, texts, labels):
+    inputs = clip_processor(
+        text=texts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+        truncation=True
+    )
+    inputs["labels"] = labels
+    return inputs
+
+# Define your data collator
+def collate_fn(batch):
+    images, texts, labels = zip(*batch)
+    return process_data(images, texts, labels)
+
+# Initialize the dataset
+dataset = CustomDataset()
+
+# Define the interface function
+def chatbot_interface(text, photo):
+    # Convert input photo to PIL Image
+    image = Image.open(photo).convert('RGB')
+    
+    # Process the input text and photo
+    inputs = process_data([image], [text], None)
+    
+    # Forward pass through the model
+    outputs = model(**inputs)
+    
+    # Extract predicted label
+    predicted_label = outputs.logits.argmax().item()
+    
+    return dataset.dataset['About_Illness'][predicted_label]
+
+# Create a Gradio interface
+gr.Interface(
+    fn=chatbot_interface,
+    inputs=["text", "image"],
+    outputs="text"
+).launch()
